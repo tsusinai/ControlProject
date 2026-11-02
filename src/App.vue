@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   Activity,
   ArrowUpRight,
@@ -9,12 +9,12 @@ import {
   Check,
   ChevronRight,
   CircleAlert,
-  Clock3,
   Filter,
   Flag,
   FolderKanban,
   LayoutDashboard,
   ListFilter,
+  ListTodo,
   MoreHorizontal,
   PanelLeft,
   Plus,
@@ -23,6 +23,8 @@ import {
   UserRound,
   X,
 } from 'lucide-vue-next'
+import GugaWorkbench from './components/GugaWorkbench.vue'
+import { formatAffairTime, useGugaStore } from './composables/useGugaStore'
 
 const tabs = ['全部项目', '进行中', '已完成', '待启动']
 const activeTab = ref('全部项目')
@@ -33,6 +35,8 @@ const sidebarOpen = ref(true)
 const pointer = ref({ x: 0, y: 0, active: false })
 const toast = ref('')
 const selectedId = ref('rinkl')
+const view = ref(readStoredView())
+const { affairs: gugaAffairs, openCount: gugaOpenCount, counts: gugaCounts } = useGugaStore()
 
 const projects = ref([
   {
@@ -161,6 +165,7 @@ function resetCardTilt(event) {
   card.style.setProperty('--my', '50%')
 }
 onMounted(() => {
+  if (window.matchMedia('(max-width: 680px)').matches) sidebarOpen.value = false
   window.addEventListener('pointermove', handlePointerMove, { passive: true })
   window.addEventListener('pointerleave', handlePointerLeave)
 })
@@ -171,6 +176,32 @@ onBeforeUnmount(() => {
 
 function selectProject(project) {
   selectedId.value = project.id
+  if (view.value === 'guga' && project.id !== 'guga') view.value = 'overview'
+}
+
+function openGuga() {
+  selectedId.value = 'guga'
+  view.value = 'guga'
+  if (window.matchMedia('(max-width: 680px)').matches) sidebarOpen.value = false
+  window.scrollTo(0, 0)
+}
+
+function showOverview() {
+  view.value = 'overview'
+  window.scrollTo(0, 0)
+}
+
+function readStoredView() {
+  try {
+    return sessionStorage.getItem('guga.view') === 'guga' ? 'guga' : 'overview'
+  } catch {
+    return 'overview'
+  }
+}
+
+function sideProjectClass(project) {
+  if (view.value === 'guga' && project.id === 'guga') return { 'guga-active': true }
+  return { selected: view.value === 'overview' && project.id === selectedId.value }
 }
 
 function toggleTask(task) {
@@ -219,6 +250,7 @@ function addProject() {
     trend: [0, 0, 0, 0, 0, 0, 0],
   })
   selectedId.value = id
+  view.value = 'overview'
   showCreate.value = false
   createName.value = ''
   flash('项目已添加')
@@ -229,10 +261,27 @@ const createName = ref('')
 function formatProgress(value) {
   return String(Math.round(value)).padStart(2, '0') + '%'
 }
+
+const gugaSyncLabel = computed(() => {
+  if (!gugaAffairs.value.length) return '尚未记录'
+  const latest = Math.max(...gugaAffairs.value.map((item) => item.updatedAt))
+  return '本地保存 ' + formatAffairTime(latest)
+})
+
+watch(view, (next) => {
+  try {
+    sessionStorage.setItem('guga.view', next)
+  } catch {
+    /* sessionStorage can be unavailable in private mode */
+  }
+  document.title = next === 'guga' ? 'Guga / 现实事务工作台' : 'Projects / 设计项目工作台'
+}, { immediate: true })
 </script>
 
 <template>
-  <div class="project-os" :class="{ 'sidebar-closed': !sidebarOpen }" @pointermove="handlePointerMove" @pointerleave="handlePointerLeave" :style="{ '--pointer-x': pointer.x + 'px', '--pointer-y': pointer.y + 'px' }">\n    <div class="cursor-halo" :class="{ active: pointer.active }" :style="{ left: pointer.x + 'px', top: pointer.y + 'px' }"></div>\n    <div class="ambient-word">DESIGN<br />OPERATIONS</div>
+  <div class="project-os" :class="{ 'sidebar-closed': !sidebarOpen, 'guga-view': view === 'guga' }" @pointermove="handlePointerMove" @pointerleave="handlePointerLeave" :style="{ '--pointer-x': pointer.x + 'px', '--pointer-y': pointer.y + 'px' }">
+    <div class="cursor-halo" :class="{ active: pointer.active }" :style="{ left: pointer.x + 'px', top: pointer.y + 'px' }"></div>
+    <div class="ambient-word">{{ view === 'guga' ? 'REAL LIFE' : 'DESIGN' }}<br />{{ view === 'guga' ? 'AFFAIRS' : 'OPERATIONS' }}</div>
     <aside class="project-sidebar">
       <div class="sidebar-brand">
         <div class="brand-mark">P</div>
@@ -241,7 +290,8 @@ function formatProgress(value) {
       </div>
 
       <nav class="side-nav" aria-label="主导航">
-        <button class="nav-item active"><LayoutDashboard :size="17" /><span>项目总览</span><b>3</b></button>
+        <button class="nav-item" :class="{ active: view === 'overview' }" @click="showOverview"><LayoutDashboard :size="17" /><span>项目总览</span><b>{{ projects.length }}</b></button>
+        <button class="nav-item" :class="{ active: view === 'guga' }" data-testid="nav-guga" @click="openGuga"><ListTodo :size="17" /><span>Guga 工作台</span><b>{{ gugaOpenCount }}</b></button>
         <button class="nav-item"><FolderKanban :size="17" /><span>全部项目</span></button>
         <button class="nav-item"><CalendarClock :size="17" /><span>时间排期</span></button>
         <button class="nav-item"><Activity :size="17" /><span>进度报告</span></button>
@@ -249,9 +299,12 @@ function formatProgress(value) {
 
       <div class="side-label">我的项目</div>
       <div class="side-projects">
-        <button v-for="project in projects" :key="project.id" class="side-project" :class="{ selected: project.id === selectedId }" @click="selectProject(project)">
-          <i :style="{ background: project.color }"></i><span>{{ project.name }}</span><small>{{ project.progress }}%</small>
-        </button>
+        <div v-for="project in projects" :key="project.id" class="side-project" :class="sideProjectClass(project)">
+          <button class="side-project-main" type="button" @click="selectProject(project)">
+            <i :style="{ background: project.color }"></i><span>{{ project.name }}</span><small>{{ project.progress }}%</small>
+          </button>
+          <button v-if="project.id === 'guga'" class="side-open" type="button" aria-label="打开 Guga 工作台" title="打开工作台" data-testid="side-open-guga" @click="openGuga"><ArrowUpRight :size="13" /></button>
+        </div>
       </div>
 
       <button class="add-project-side" @click="showCreate = true"><Plus :size="16" /> 新建项目</button>
@@ -265,7 +318,8 @@ function formatProgress(value) {
       <header class="topbar">
         <div class="topbar-left">
           <button v-if="!sidebarOpen" class="icon-button" aria-label="打开侧栏" @click="sidebarOpen = true"><PanelLeft :size="18" /></button>
-          <span class="breadcrumb">工作台 <ChevronRight :size="13" /> 项目总览</span>
+          <span v-if="view === 'overview'" class="breadcrumb">工作台 <ChevronRight :size="13" /> 项目总览</span>
+          <button v-else class="breadcrumb breadcrumb-button" type="button" @click="showOverview">工作台 <ChevronRight :size="13" /> <span class="crumb-current">Guga 现实事务</span></button>
         </div>
         <div class="topbar-actions">
           <button class="top-action"><Bell :size="17" /><span class="notification-dot"></span></button>
@@ -274,6 +328,9 @@ function formatProgress(value) {
         </div>
       </header>
 
+      <GugaWorkbench v-if="view === 'guga'" @back="showOverview" @toast="flash" />
+
+      <template v-else>
       <section class="intro-row">
         <div>
           <p class="eyebrow">Friday / 02 October 2026</p>
@@ -328,11 +385,12 @@ function formatProgress(value) {
           <div class="card-tags"><span v-for="tag in project.tags" :key="tag">{{ tag }}</span></div>
           <div class="card-progress"><div class="progress-label"><span>项目进度</span><b>{{ formatProgress(project.progress) }}</b></div><div class="progress-track"><i :style="{ width: project.progress + '%', background: project.color }"></i></div></div>
           <div class="card-footer"><span><UserRound :size="14" /> {{ project.owner }}</span><span><CalendarClock :size="14" /> {{ project.deadline }}</span><span class="card-updated">{{ project.updated }}</span></div>
+          <button v-if="project.id === 'guga'" class="card-workbench" type="button" data-testid="card-open-guga" @click.stop="openGuga"><span>打开工作台</span><span>{{ gugaOpenCount }} 项未完成 <ArrowUpRight :size="14" /></span></button>
         </article>
       </section>
 
       <section class="detail-panel reveal-section" aria-label="项目详情">
-        <div class="detail-heading"><div><p class="eyebrow">Selected project / 02</p><h2>{{ selectedProject.name }} <span>· {{ selectedProject.stage }}</span></h2></div><div class="detail-actions"><select :value="selectedProject.status" @change="changeStatus($event.target.value)"><option>进行中</option><option>已完成</option><option>待启动</option></select><button class="outline-button"><MoreHorizontal :size="16" /> 管理项目</button></div></div>
+        <div class="detail-heading"><div><p class="eyebrow">Selected project / 02</p><h2>{{ selectedProject.name }} <span>· {{ selectedProject.stage }}</span></h2></div><div class="detail-actions"><select :value="selectedProject.status" @change="changeStatus($event.target.value)"><option>进行中</option><option>已完成</option><option>待启动</option></select><button v-if="selectedProject.id === 'guga'" class="primary-button guga-open-button" type="button" data-testid="detail-open-guga" @click="openGuga">打开工作台 <ArrowUpRight :size="14" /></button><button class="outline-button"><MoreHorizontal :size="16" /> 管理项目</button></div></div>
         <div class="detail-grid">
           <div class="detail-progress">
             <div class="detail-progress-head"><div><span class="eyebrow">Current progress</span><strong>{{ formatProgress(selectedProject.progress) }}</strong></div><div class="trend-caption"><Activity :size="14" /> 近 7 日进度</div></div>
@@ -341,11 +399,12 @@ function formatProgress(value) {
           </div>
           <div class="milestone-panel"><div class="panel-title"><span>里程碑</span><small>项目时间线</small></div><div class="milestones"><div v-for="milestone in selectedProject.milestones" :key="milestone.name" class="milestone" :class="{ done: milestone.done, current: milestone.current }"><span class="milestone-node"><Check v-if="milestone.done" :size="12" /><i v-else></i></span><div><strong>{{ milestone.name }}</strong><small>{{ milestone.date }}</small></div></div></div></div>
           <div class="tasks-panel"><div class="panel-title"><span>下一步任务</span><small>{{ selectedProject.tasks.filter((task) => !task.done).length }} 项待处理</small></div><label v-for="task in selectedProject.tasks" :key="task.title" class="task-item" :class="{ done: task.done }"><input :checked="task.done" type="checkbox" @change="toggleTask(task)" /><span class="task-check"><Check :size="12" /></span><span class="task-copy"><strong>{{ task.title }}</strong><small>{{ task.meta }}</small></span><ChevronRight :size="15" /></label><button class="add-task-button"><Plus :size="14" /> 添加任务</button></div>
-          <div class="owner-panel"><div class="panel-title"><span>项目概况</span><small>最后更新 {{ selectedProject.updated }}</small></div><div class="owner-row"><div class="owner-avatar" :style="{ background: selectedProject.ownerColor }">{{ selectedProject.owner.slice(0, 1) }}</div><div><strong>{{ selectedProject.owner }}</strong><small>项目负责人</small></div><button class="mini-icon"><MoreHorizontal :size="16" /></button></div><div class="overview-list"><div><span>当前阶段</span><strong>{{ selectedProject.stage }}</strong></div><div><span>预算</span><strong>{{ selectedProject.budget }}</strong></div><div><span>截止日期</span><strong>{{ selectedProject.deadline }}</strong></div></div><button class="detail-link">查看完整项目 <ArrowUpRight :size="15" /></button></div>
+          <div class="owner-panel"><div class="panel-title"><span>项目概况</span><small>最后更新 {{ selectedProject.updated }}</small></div><div class="owner-row"><div class="owner-avatar" :style="{ background: selectedProject.ownerColor }">{{ selectedProject.owner.slice(0, 1) }}</div><div><strong>{{ selectedProject.owner }}</strong><small>项目负责人</small></div><button class="mini-icon"><MoreHorizontal :size="16" /></button></div><div class="overview-list"><div><span>当前阶段</span><strong>{{ selectedProject.stage }}</strong></div><div><span>预算</span><strong>{{ selectedProject.budget }}</strong></div><div><span>截止日期</span><strong>{{ selectedProject.deadline }}</strong></div><div v-if="selectedProject.id === 'guga'"><span>现实事务</span><strong>{{ gugaCounts.doing }} 进行中 · {{ gugaCounts.todo }} 待办</strong></div></div><button v-if="selectedProject.id === 'guga'" class="detail-link" type="button" @click="openGuga">打开工作台 <ArrowUpRight :size="15" /></button><button v-else class="detail-link" type="button">查看完整项目 <ArrowUpRight :size="15" /></button></div>
         </div>
       </section>
+      </template>
 
-      <footer class="project-footer"><span>PROJECTS / DESIGN OPERATIONS</span><span>进度清晰，协作自然。</span><span>最后同步 10:42</span></footer>
+      <footer class="project-footer"><span>{{ view === 'guga' ? 'GUGA / REAL LIFE' : 'PROJECTS / DESIGN OPERATIONS' }}</span><span>{{ view === 'guga' ? '事务保存在这台浏览器里。' : '进度清晰，协作自然。' }}</span><span>{{ view === 'guga' ? gugaSyncLabel : '最后同步 10:42' }}</span></footer>
     </main>
 
     <transition name="toast"><div v-if="toast" class="toast-message"><Check :size="15" /> {{ toast }}</div></transition>
